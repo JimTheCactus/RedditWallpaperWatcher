@@ -1,0 +1,10 @@
+{
+    "subreddits": [
+        "r/moescape"
+    ],
+    "target_size": {
+        "x": 3440, 
+        "y": 1440
+    },
+    "aspect_ratio_tolerance": 0.01
+}

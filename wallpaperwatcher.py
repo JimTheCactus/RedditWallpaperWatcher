@@ -1,166 +1,130 @@
-import typing
+from typing import List, Dict, Optional, Any, Set
+from dataclasses import dataclass
 import logging
 import asyncio
-import time
 import os
 import json
-import contextlib
+import jsons
 import sys
-from urllib.parse import urlencode
-from dataclasses import dataclass
 from pathlib import Path
 
 import tornado.ioloop
-import tornado.web
-import tornado.httpclient
+
+from asyncreddit import RedditAuthInfo, RedditTokenInfo, RedditClient
 
 logger: logging.Logger
 logger = logging.getLogger("wallpaperwatcher")
 
-@dataclass
-class RedditAuthInfo():
-    client_id: str
-    client_secret: str
 
 @dataclass
-class RedditTokenInfo():
-    access_token: str
-    token_type: str
-    expires_in: float
-    scope: str
+class Size():
+    x: int
+    y: int
+
+@dataclass
+class WallpaperConfig():
+    subreddits: List[str]
+    target_size: Size
+    aspect_ratio_tolerance: float
+
+wallpaper_dir: Path
+client: RedditClient
+config: WallpaperConfig
+last_post: Dict[str, Optional[str]]
 
 USER_AGENT = "python:com.jimthecactus.wallpaperwatcher:v0.0.1 (by /u/PM_ME_YOUR_BEST_MIO)"
-with open("auth_info.json", "r") as f:
-    CLIENT_AUTH = RedditAuthInfo(**json.load(f))
-REDDIT_BASE_URL="https://oauth.reddit.com/"
-
-io_loop: tornado.ioloop.IOLoop
-interval: tornado.ioloop.PeriodicCallback
-wallpaper_dir: Path
-token: RedditTokenInfo
-token = None
-
-@contextlib.contextmanager
-def get_async_client(*args, **kwargs) -> tornado.httpclient.AsyncHTTPClient:
-    http_client = tornado.httpclient.AsyncHTTPClient(*args, **kwargs)
-    try:
-        yield http_client
-    finally:
-        http_client.close()
-
-async def call_reddit_api(endpoint, **kwargs):
-    logger.debug("call_reddit_api: enter")
-
-    global token
-
-    with get_async_client() as client:
-        qargs = {"raw_json":"1"}
-        qargs.update(kwargs)
-        query = "?" + urlencode(qargs)
-        uri = f"{REDDIT_BASE_URL}{endpoint}{query}"
-
-        logger.debug("call_reddit_api: begin query(uri='%s')", uri)
-        try:
-            response = await client.fetch(uri,
-                user_agent=USER_AGENT,
-                headers={"Authorization": f"{token.token_type} {token.access_token}"}
-                )
-        except tornado.httpclient.HTTPClientError as exc:
-            # If we got an unauthorized error
-            if exc.code == 401 or exc.code == 403:
-                logger.error("Token was rejected! Resetting token.")
-                token = None
-            # And regardless, rethrow. (We can't recover from that, but we
-            # can at least safely discount our old token)
-            raise
-        result = response.buffer
-        logger.debug("call_reddit_api: query returned. %s", response.body)
-
-    logger.debug("call_reddit_api: exit")
-    return result
-
-async def call_reddit_api_json(endpoint, **kwargs):
-    return json.load(await call_reddit_api(endpoint, **kwargs))
-
-class MainHandler(tornado.web.RequestHandler):
-    def get(self):
-        bubba = self.get_argument("bubba", default=None)
-
-        if bubba is None:
-            self.send_error(400, message="'bubba' query parameter missing")
-            return
-
-        result = {'now': time.localtime()}
-        logger.info(f"Got request for path '{self.request.uri}'")
-        self.write(json.dumps(result))
-    
-    def write_error(self, status_code:int, message: str = "", **kwargs):
-        self.set_status(status_code)
-        self.write(f"<html><head><title>Exception</title></head><body><h1>{status_code}: {message}</h1></body></html>")
 
 async def async_pause():
     stream = tornado.iostream.PipeIOStream(sys.stdin.fileno())
     await stream.read_until(b"\n")
     stream.close()
 
-async def call_timer():
-    logger.info("Fetching Value")
-    try:
-        result = await call_reddit_api_json("", bubba="gump")
-    except Exception as exc:
-        logger.error("Failed to fetch time struct!", exc_info=exc)
-        return
+async def reauth():
+    # Get a token
+    token = await client.get_new_token()
+    # And register that we want to update it 240 seconds before it expires
+    tornado.ioloop.IOLoop.current().call_later(token.expires_in-240, reauth)
 
-    logger.info("Fetched: %s", result['now'])
+async def process_post(post: Dict[str, Any]) -> None:
+    # TODO: Do a thing here that does stuff with post data.
+    logger.info("Saw post %s", post['data']['name'])
 
-async def get_new_token():
-    logger.debug("get_token: enter")
+async def fetch_latest() -> None:
+    global last_post
 
-    global token
-    ACCESS_URI="https://www.reddit.com/api/v1/access_token"
+    for subreddit in config.subreddits:
+        logger.info("Fetching posts for %s", subreddit)
+        # While there's still subreddits with more posts.
+        while True:
+            # If we have a last post on file for this subreddit, ask to start after that.
+            args = {'count': 1000}
+            if last_post[subreddit] is not None:
+                args['before']=last_post[subreddit]
 
-    client: tornado.httpclient.AsyncHTTPClient
-    with get_async_client() as client:
-        qargs = {
-            "grant_type": "client_credentials"
-        }
+            # Fecth the posts
+            result = await client.call_reddit_api_json(f"{subreddit}/new.json", **args)
 
-        body = urlencode(qargs)
-        
-        logger.debug("get_token: begin query(uri='%s')", ACCESS_URI)
-        response = await client.fetch(ACCESS_URI,            
-            method='POST',
-            body=body,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            user_agent=USER_AGENT,
-            auth_mode="basic",
-            auth_username=CLIENT_AUTH.client_id,
-            auth_password=CLIENT_AUTH.client_secret,
-            )
-        logger.debug("get_token: query returned. %s", response.body)
-        result = json.load(response.buffer)
+            # Basic sanity check.
+            if result['kind'] != "Listing":
+                raise Exception("Not a listing?!")
+            posts = result['data']['children']
 
-    token = RedditTokenInfo(**result)
-    logger.info(f"Token is good for: {result['expires_in']}")
-    io_loop.call_later(token.expires_in-240, get_new_token)
-    
-    logger.debug("get_token: exit")
+            # If we didn't get any posts, skip processing.
+            if len(posts) < 1:
+                # We don't need to look at this subreddit anymore
+                break
+
+            for post in posts:
+                await process_post(post)
+
+            # Finally, update our last post record
+            last_post[subreddit] = posts[0]['data']['name']
+
+            logger.info("Before: %s, After %s", result['data']['before'],result['data']['after'])
+            if result['data']['before'] == None:
+                break
+            else:
+                tornado.ioloop.time.sleep(1)
+
 
 async def login_and_start_loop():
-    await get_new_token()
+    global client
+    global wallpaper_dir
+    global config
+    global last_post
 
-    #interval = tornado.ioloop.PeriodicCallback(callback=call_timer, callback_time=1000)
-    #interval.start()
+    client = RedditClient(USER_AGENT, RedditAuthInfo.from_file("auth_info.json"))
+    with open("wallpaper_config.json", "r") as f:
+        config = jsons.load(json.load(f), WallpaperConfig)
+    
+    # Pre-fill our last posts
+    last_post={}
+    for subreddit in config.subreddits:
+        last_post[subreddit] = None
 
-    result = await call_reddit_api_json("r/moescape/new.json", limit=3)
-    logger.debug(json.dumps(result, indent=2))
+    # Setup our path
+    wallpaper_dir = Path("wallpapers")
+    wallpaper_dir.mkdir(parents=True, exist_ok=True)
 
-def get_server_app():
-    return tornado.web.Application([
-        (r"/", MainHandler),
-    ])
+    logger.info("Logging in.")
+    # Grab an auth token
+    await reauth()
+
+    logger.info("Doing initial fetch.")
+    # Do an initial fetch
+    await fetch_latest()
+
+    logger.info("Done.")
+    tornado.ioloop.IOLoop.current().stop()
+
+    #logger.info("Launching main loop.")
+    #interval = tornado.ioloop.PeriodicCallback(callback=fetch_latest, callback_time=60000)
+    #interval.start()    
+
 
 if __name__ == "__main__":
+    logging.info("Initializing.")
+
     # Windows workaround for Python 3.8 and Tornado 6.0.4.
     # See https://www.tornadoweb.org/en/stable/index.html#installation
     if os.name=="nt":
@@ -170,14 +134,11 @@ if __name__ == "__main__":
     logging.basicConfig()
     logger.setLevel(logging.DEBUG)
 
-    # Setup our path
-    wallpaper_dir = Path("wallpapers")
-    wallpaper_dir.mkdir(parents=True, exist_ok=True)
-
+    # Create an IO Loop
     io_loop = tornado.ioloop.IOLoop.current()
 
-    app = get_server_app()
-    app.listen(8080)
-
+    # Register our entrypoint
     io_loop.add_callback(login_and_start_loop)    
+
+    # And get this party started.
     io_loop.start()
