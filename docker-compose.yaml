@@ -1,0 +1,11 @@
+---
+    version: "2.4"
+    services:
+      wallpaperwatcher:
+        image: wallpaperwatcher
+        build:
+          context: .
+        volumes:
+          - ./wallpaper_config.yaml:/app/wallpaper_config.yaml
+          - ./auth_info.yaml:/app/auth_info.yaml
+          - ./images/:/app/images/

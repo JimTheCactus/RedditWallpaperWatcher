@@ -133,12 +133,15 @@ async def process_post(post: Submission, subreddit: str, options: SubredditConfi
 
 async def do_download(url: str, directory: str) -> None:
     """Waits for a free download slot to open up and downloads an image"""
-    # Grab a handle on our download throttle
-    async with downloads_sym:
-        # Since it's our turn, download the image
-        filename = await downloader.download_image(url, directory)
+    try:
+        # Grab a handle on our download throttle
+        async with downloads_sym:
+            # Since it's our turn, download the image
+            filename = await downloader.download_image(url, directory)
 
-    polite_print(f"Downloaded '{filename}'.")
+        polite_print(f"Downloaded '{filename}'.")
+    except Exception as exc:
+        logger.error("Unable to download 'url'.", exc_info=exc)
 
 async def fetch_latest() -> None:
     """Fetches any pending posts and downloads any appropriate images"""
