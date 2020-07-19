@@ -1,9 +1,9 @@
 ---
     subreddits:
         moescape:
-            folder: moescape
+            folder: images/moescape
         awenime:
-            folder: awenime
+            folder: images/awenime
 
     target_size:
         width: 1920

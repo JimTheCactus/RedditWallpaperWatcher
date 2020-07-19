@@ -33,7 +33,7 @@ def _get_async_client(*args, **kwargs) -> tornado.httpclient.AsyncHTTPClient:
     finally:
         http_client.close()
 
-async def download_image(url: str, directory: str):
+async def download_image(url: str, directory: str) -> str:
     """ Downloads an image and saves it to a folder. """
     client: tornado.httpclient.AsyncHTTPClient
 
@@ -85,6 +85,8 @@ async def download_image(url: str, directory: str):
         logger.debug("Copying from '%s' to '%s'", f.name, str(location))
         shutil.copyfile(f.name, str(location))
     logger.info("Download complete.")
+
+    return str(location)
 
 async def main():
     await download_image(

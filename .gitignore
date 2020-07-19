@@ -131,6 +131,6 @@ dmypy.json
 .vscode/
 
 # Ignore outputs
-wallpapers/
+images/
 auth_info.yaml
 wallpaper_config.yaml
