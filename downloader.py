@@ -45,7 +45,7 @@ async def download_image(url: str, directory: str):
                 content_type = result.headers['Content-Type']
             else:
                 content_type = ""
-            logger.info("Content-Type: %s", content_type)
+            logger.debug("Discovered Content-Type: %s", content_type)
 
         # start with the directory we were given
         dirpath = Path(directory)
@@ -64,17 +64,25 @@ async def download_image(url: str, directory: str):
             # But we recognize the content type from the headers
             if content_type in known_types:
                 # Use the extension associated with that type.
-                suffix += known_types[content_type]
+                suffix = known_types[content_type]
+                logger.debug("Using extension '%s' since the file didn't have one.", suffix)
+            else:
+                logger.warning("No extension found and could not infer one for '%s'!", url)
 
         # Build up the final image name
         location = dirpath / f"{prefix}{suffix}"
         # Add infixes until we find a good filename.
         # This is non-atomic and unsafe. Don't go playing in the folder while we do this.
         count = 1
+        warned = False
         while location.exists():
+            if not warned:
+                logger.warning("File '%s' already exists. File will be renamed.", str(location))
+                warned = True
             location = dirpath / f"{prefix} ({count}){suffix}"
             count += 1
         # And copy our temporary file into it's final resting place.
+        logger.debug("Copying from '%s' to '%s'", f.name, str(location))
         shutil.copyfile(f.name, str(location))
     logger.info("Download complete.")
 
