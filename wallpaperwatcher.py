@@ -31,7 +31,7 @@ class RedditAuthInfo():
     @staticmethod
     def from_file(filename:str) -> "RedditAuthInfo":
         with open(filename, "r") as f:
-            auth = jsons.load(yaml.load(f), RedditAuthInfo)
+            auth = jsons.load(yaml.load(f, Loader=yaml.BaseLoader), RedditAuthInfo)
         return auth
 
 @dataclass
@@ -58,7 +58,7 @@ class WallpaperConfig():
     @staticmethod
     def from_file(filename:str) -> "WallpaperConfig":
         with open(filename, "r") as f:
-            return jsons.load(yaml.load(f), WallpaperConfig)
+            return jsons.load(yaml.load(f, Loader=yaml.BaseLoader), WallpaperConfig)
 
 @dataclass
 class RedditImage():

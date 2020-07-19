@@ -1,0 +1,13 @@
+---
+    subreddits:
+        moescape:
+            folder: moescape
+        awenime:
+            folder: awenime
+
+    target_size:
+        width: 1920
+        height: 1080
+    aspect_ratio_tolerance: 0.05
+    max_downloads: 5
+    update_interval: 60000
