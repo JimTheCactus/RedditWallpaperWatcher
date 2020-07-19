@@ -18,7 +18,7 @@ class MainHandler(tornado.web.RequestHandler):
         result = {'now': time.localtime()}
         logger.info(f"Got request for path '{self.request.uri}'")
         self.write(json.dumps(result))
-    
+
     def write_error(self, status_code:int, message: str = "", **kwargs):
         self.set_status(status_code)
         self.write(f"<html><head><title>Exception</title></head><body><h1>{status_code}: {message}</h1></body></html>")

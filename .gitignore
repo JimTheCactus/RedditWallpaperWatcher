@@ -132,4 +132,4 @@ dmypy.json
 
 # Ignore outputs
 wallpapers/
-auth_info.json
+auth_info.yaml

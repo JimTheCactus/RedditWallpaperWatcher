@@ -1,2 +1,4 @@
 tornado==6.0.4
 jsons==1.2.0
+praw==7.1.0
+PyYAML==5.3.1
