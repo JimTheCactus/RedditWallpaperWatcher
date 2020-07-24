@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import logging
 from typing import List, Dict, Optional, Any, Set
 from dataclasses import dataclass, field
@@ -9,6 +10,7 @@ import sys
 import asyncio
 from pathlib import Path
 import argparse
+import signal
 
 import tornado.ioloop
 import tornado.locks
@@ -140,6 +142,7 @@ async def do_download(url: str, directory: str) -> None:
             filename = await downloader.download_image(url, directory)
 
         polite_print(f"Downloaded '{filename}'.")
+        logger.info("Downloaded '%s'", filename)
     except Exception as exc:
         logger.error("Unable to download 'url'.", exc_info=exc)
 
@@ -200,6 +203,8 @@ async def main() -> None:
     global downloads_sym
 
     try:
+        signal.signal(signal.SIGTERM, handle_sigterm)
+
         logger.info("Loading Configuration...")
         config = WallpaperConfig.from_file(cmdline_args.config_file)
         logger.debug("Loaded: %s", config)
@@ -223,12 +228,22 @@ async def main() -> None:
         sub_streams = {}
         for subreddit in config.subreddits:
             sub_streams[subreddit] = client.subreddit(subreddit).stream.submissions(pause_after=-1)
+
+        logger.info("Launching main loop...")
+        tornado.ioloop.IOLoop.current().add_callback(fetch_and_repeat)
+        polite_print("Wallpaper Downloader Started.")
+
     except Exception as exc:
         die("FATAL! Error initializing!", exc_info=exc)
 
-    logger.info("Launching main loop...")
-    tornado.ioloop.IOLoop.current().add_callback(fetch_and_repeat)
-    polite_print("Wallpaper Downloader Started.")
+async def shutdown():
+    # Do a shutdown
+    logger.warning("Shutting Down...")
+    tornado.ioloop.IOLoop.current().stop()
+
+def handle_sigterm(signum, sighandler):
+    # Register a callback inside the main loop
+    io_loop.add_callback_from_signal(shutdown)
 
 def parse_cmd_args() -> argparse.Namespace:
     """ Parses out the arguments understood by the program """
@@ -301,3 +316,5 @@ if __name__ == "__main__":
 
     # And get this party started.
     io_loop.start()
+
+    polite_print("Wallpaper Downloader Stopped.")
