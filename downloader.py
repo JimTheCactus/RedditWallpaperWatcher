@@ -1,13 +1,21 @@
+"""
+downloader.py
+By: John-Michael O'Brien
+Date: 7/18/2020
+
+Provides utilites for asynchronously downloading multiple files with
+minimal CPU intervention in a coroutine based system.
+"""
+
 import logging
-import json
-import time
+from typing import List
 import contextlib
 import shutil
 from tempfile import NamedTemporaryFile
 from pathlib import Path, PurePath
-import urllib3.util.url
 import re
 
+import urllib3.util.url
 import tornado.httpclient
 
 logger: logging.Logger
@@ -33,30 +41,55 @@ def _get_async_client(*args, **kwargs) -> tornado.httpclient.AsyncHTTPClient:
     finally:
         http_client.close()
 
-async def download_image(url: str, directory: str) -> str:
-    """ Downloads an image and saves it to a folder. """
+async def copy_to_destinations(source_file: str, dest_directories: List[str],
+                               prefix: str, suffix: str) -> List[str]:
+    """ Copies a file to a number of destination folders """
+    locations = []
+    for directory in dest_directories:
+        # start with the directory we were given
+        dirpath = Path(directory)
+        # Make sure it exists.
+        dirpath.mkdir(parents=True, exist_ok=True)
+
+        # Build up the final image name
+        location = dirpath / f"{prefix}{suffix}"
+        # Add infixes until we find a good filename.
+        # This is non-atomic and unsafe. Don't go playing in the folder while we do this.
+        count = 1
+        warned = False
+        if location.exists():
+            if not warned:
+                logger.warning("File '%s' already exists. File will be renamed.", str(location))
+                warned = True
+            location = dirpath / f"{prefix} ({count}){suffix}"
+            count += 1
+        # And copy our temporary file into it's final resting place.
+        logger.debug("Copying from '%s' to '%s'", source_file, str(location))
+        shutil.copyfile(source_file, str(location))
+        locations.append(str(location))
+    return locations
+
+
+async def download_image(url: str, dest_directories: List[str]) -> List[str]:
+    """ Downloads an image and saves it to one or more folders. """
     client: tornado.httpclient.AsyncHTTPClient
 
-    logger.info("Starting download of '%s' to '%s'.", url, directory)
-    with NamedTemporaryFile("wb") as f:
+    with NamedTemporaryFile("wb") as target_file:
+        logger.info("Starting download of '%s' to '%s'.", url, target_file.name)
         with _get_async_client() as client:
-            result = await client.fetch(url, streaming_callback=f.write)
+            result = await client.fetch(url, streaming_callback=target_file.write)
             if 'Content-Type' in result.headers:
                 content_type = result.headers['Content-Type']
             else:
                 content_type = ""
             logger.debug("Discovered Content-Type: %s", content_type)
 
-        # start with the directory we were given
-        dirpath = Path(directory)
-        # Make sure it exists.
-        dirpath.mkdir(parents=True, exist_ok=True)
         # Parse out the URL
         url_info = urllib3.util.url.parse_url(url)
         # and get the path element.
         path = PurePath(url_info.path)
         # Make the path banally simple and 128 characters or less.
-        prefix = re.sub(r'[^A-Za-z0-9_\.]',r'', path.stem)[:128]
+        prefix = re.sub(r'[^A-Za-z0-9_\.]', '', path.stem)[:128]
 
         # If we don't have an extension
         suffix = path.suffix
@@ -69,32 +102,8 @@ async def download_image(url: str, directory: str) -> str:
             else:
                 logger.warning("No extension found and could not infer one for '%s'!", url)
 
-        # Build up the final image name
-        location = dirpath / f"{prefix}{suffix}"
-        # Add infixes until we find a good filename.
-        # This is non-atomic and unsafe. Don't go playing in the folder while we do this.
-        count = 1
-        warned = False
-        while location.exists():
-            if not warned:
-                logger.warning("File '%s' already exists. File will be renamed.", str(location))
-                warned = True
-            location = dirpath / f"{prefix} ({count}){suffix}"
-            count += 1
-        # And copy our temporary file into it's final resting place.
-        logger.debug("Copying from '%s' to '%s'", f.name, str(location))
-        shutil.copyfile(f.name, str(location))
+        locations = await copy_to_destinations(target_file.name, dest_directories, prefix, suffix)
+
     logger.info("Download complete.")
 
-    return str(location)
-
-async def main():
-    await download_image(
-        url="https://preview.redd.it/lpitob52ql951.jpg?auto=webp&s=aa11358055431dc140fe29907d840f0b10221c7f",
-        directory=Path("."))
-
-if __name__=="__main__":
-    logging.basicConfig()
-    logger.setLevel(logging.INFO)
-    io_loop = tornado.ioloop.IOLoop.current()
-    io_loop.run_sync(main)
+    return locations
