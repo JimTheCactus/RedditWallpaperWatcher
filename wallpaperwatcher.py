@@ -1,67 +1,40 @@
 #!/usr/bin/env python3
+"""
+wallpaperwatcher.py
+By: John-Michael O'Brien
+Date: 7/18/2020
+
+This script will monitor a number of subreddits and multi reddits and
+produce a set of files in specified folders for posts with images that
+match, within some tolerance the aspect ratio of a target resolution
+and are the same as, or bigger than, that specified resolution.
+
+This is great for collecting wallpapers from Reddit on a continuous
+basis.
+"""
+
+
 import logging
-from typing import List, Dict, Optional, Any, Set
-from dataclasses import dataclass, field
-import asyncio
+from typing import List, Dict
+from dataclasses import dataclass
 import os
-import json
-import jsons
 import sys
 import asyncio
-from pathlib import Path
 import argparse
 import signal
 
 import tornado.ioloop
 import tornado.locks
 import praw
-from praw.models.reddit.subreddit import SubredditStream
 from praw.models.reddit.submission import Submission
 from praw.models.util import stream_generator
-import yaml
+import jsons
 
-import downloader
+from downloader import download_image
+from config_objects import WallpaperConfig, RedditAuthInfo
 
 logger: logging.Logger
 logger = logging.getLogger("wallpaperwatcher")
-
-@dataclass
-class RedditAuthInfo():
-    """ Holds Reddit Authentication Values """
-    client_id: str
-    client_secret: str
-
-    @staticmethod
-    def from_file(filename:str) -> "RedditAuthInfo":
-        with open(filename, "r") as f:
-            auth = jsons.load(yaml.load(f, Loader=yaml.BaseLoader), RedditAuthInfo)
-        return auth
-
-@dataclass
-class Size():
-    """ Holds a size """
-    width: int
-    height: int
-
-@dataclass
-class SubredditConfig():
-    """ Holds per subreddit configuration data like target folders """
-    folder: str
-    # This space left blank for future expansion
-
-@dataclass
-class WallpaperConfig():
-    """ Holds the configuration including subreddits and image qualifications """
-    subreddits: Dict[str, Optional[SubredditConfig]]
-    target_size: Size
-    aspect_ratio_tolerance: float
-    max_downloads: int
-    update_interval: int
-
-    @staticmethod
-    def from_file(filename:str) -> "WallpaperConfig":
-        with open(filename, "r") as f:
-            return jsons.load(yaml.load(f, Loader=yaml.BaseLoader), WallpaperConfig)
 
 @dataclass
 class RedditImage():
@@ -72,30 +45,37 @@ class RedditImage():
 
 client: praw.Reddit
 config: WallpaperConfig
-sub_streams: Dict[str, stream_generator]
-target_aspect_ratio: float
+sources: Dict[str, stream_generator]
 downloads_sym: tornado.locks.Semaphore
 cmdline_args: argparse.Namespace
 
 USER_AGENT = "python:com.jimthecactus.wallpaperwatcher:v0.0.1 (by /u/PM_ME_YOUR_BEST_MIO)"
 
-def polite_print(*args, **kwargs):
-    """Proxy for print that is muted if we've been asked to be quiet"""
+def polite_print(*args, **kwargs) -> None:
+    """ Proxy for print that is muted if we've been asked to be quiet """
     if not cmdline_args.quiet:
         print(*args, **kwargs)
 
-def die(*args, **kwargs):
-    """Emits a critical log and exits with a non-zero status. All arguments will be
-    passed to logger.critical."""
-    logger.critical(*args, **kwargs)
-    exit(1)
+async def do_download(url: str, dest_directories: List[str]) -> None:
+    """ Waits for a free download slot to open up and downloads an image """
+    try:
+        # Grab a handle on our download throttle
+        async with downloads_sym:
+            # Since it's our turn, download the image
+            filenames = await download_image(url, dest_directories)
 
-async def process_post(post: Submission, subreddit: str, options: SubredditConfig) -> List[asyncio.Task]:
-    """Processes submissions retrieved from reddit, identifies any
+        polite_print(f"Downloaded {filenames}'.")
+        logger.info("Downloaded %s", filenames)
+    except Exception as exc: # pylint: disable=broad-except
+        # We want exceptions here to be non-fatal
+        logger.error("Unable to download 'url'.", exc_info=exc)
+
+async def process_post(post: Submission, source_name: str) -> List[asyncio.Task]:
+    """ Processes submissions retrieved from reddit, identifies any
     appropriate images, and downloads them. Returns a list of download
-    tasks to be awaited."""
+    tasks to be awaited. """
 
-    logger.info("Processing post r/%s: %s", post.subreddit.display_name, post.title, )
+    logger.info("Processing post in r/%s: %s", post.subreddit.display_name, post.title)
 
     downloads = []
 
@@ -108,77 +88,80 @@ async def process_post(post: Submission, subreddit: str, options: SubredditConfi
         return downloads
 
     for image in images:
-        source = jsons.load(image['source'], RedditImage)
-        logger.info("Found an image (%d x %d): %s", source.width, source.height, source.url)
-
-        if source.height < config.target_size.height:
-            continue
-        if source.width < config.target_size.width:
-            continue
+        source_image = jsons.load(image['source'], RedditImage)
+        logger.info("Found an image (%d x %d): %s",
+                    source_image.width,
+                    source_image.height,
+                    source_image.url)
 
         # Compute the aspect ration
-        aspect_ratio = float(source.width)/float(source.height)
-        # And determine if it is in tolerances
-        if abs((aspect_ratio-target_aspect_ratio)/aspect_ratio) > config.aspect_ratio_tolerance:
-            continue
+        aspect_ratio = float(source_image.width)/float(source_image.height)
 
-        logger.info("Image is suitable for wallpaper!")
-        if options is not None:
-            folder = options.folder
-        else:
-            folder = "."
+        destinations = {}
+        for target_name, target in config.targets.items():
+            if source_name not in target.sources:
+                continue
+            if source_image.height < target.size.height:
+                continue
+            if source_image.width < target.size.width:
+                continue
+            # And determine if it is in tolerances
+            if abs((aspect_ratio-target.size.aspect_ratio)/target.size.aspect_ratio) \
+                    > config.aspect_ratio_tolerance:
+                continue
+            if post.over_18 and not target.allow_nsfw:
+                continue
+            destinations[target_name] = target.path
 
-        # Start a download but don't await it. Just catch the future for later.
-        downloads.append(asyncio.create_task(do_download(source.url, folder)))
+        if destinations:
+            logger.info("Image is suitable for %s!", ",".join(destinations.keys()))
+
+            # Start a download but don't await it. Just catch the future for later.
+            downloads.append(
+                asyncio.create_task(
+                    do_download(source_image.url, destinations.values())
+                )
+            )
 
     return downloads
 
-async def do_download(url: str, directory: str) -> None:
-    """Waits for a free download slot to open up and downloads an image"""
-    try:
-        # Grab a handle on our download throttle
-        async with downloads_sym:
-            # Since it's our turn, download the image
-            filename = await downloader.download_image(url, directory)
-
-        polite_print(f"Downloaded '{filename}'.")
-        logger.info("Downloaded '%s'", filename)
-    except Exception as exc:
-        logger.error("Unable to download 'url'.", exc_info=exc)
-
 async def fetch_latest() -> None:
-    """Fetches any pending posts and downloads any appropriate images"""
-    global sub_streams
-    global client
+    """ Fetches any pending posts and downloads any appropriate images """
 
     try:
-        sub_stream: stream_generator
+        source_name: str
+        source: stream_generator
         downloads = []
-        for subreddit, sub_stream in sub_streams.items():
-            logger.info("Fetching posts for %s", subreddit)
+
+        for source_name, source in sources.items():
+            logger.info("Fetching posts for source '%s'", source_name)
 
             try:
-                post: Submission = next(sub_stream)
+                post: Submission = next(source)
                 while post is not None:
                     # We want to fail nicely per post.
                     try:
-                        downloads += await process_post(post, subreddit, config.subreddits[subreddit])
-                    except Exception as exc:
-                        print("Uhhhh?")
+                        downloads += await process_post(post, source_name)
+                    except Exception as exc:  # pylint: disable=broad-except
+                        # We want exceptions here to be non-fatal
                         logger.error("Failed to process post '%s'.", post.title, exc_info=exc)
 
-                    post = next(sub_stream)
-            except Exception as exc:
-                logger.error("Failed to process subreddit '%s'.", subreddit, exc_info=exc)
+                    post = next(source)
+            except Exception as exc: # pylint: disable=broad-except
+                # We want exceptions here to be non-fatal
+                logger.error("Failed to process source '%s'.", source_name, exc_info=exc)
 
         # If we have any pending downloads
         if len(downloads) > 0:
             # Make sure they all finish before we say we're ready to go again.
             await asyncio.wait(downloads)
-    except Exception as exc:
-        logger.error("Error fetching/processing posts! Not all posts may have been checked!", exc_info=exc)
 
-async def fetch_and_repeat():
+    except Exception as exc: # pylint: disable=broad-except
+        # We want exceptions here to be non-fatal
+        logger.error("Error fetching/processing posts! Not all posts may have been checked!",
+                     exc_info=exc)
+
+async def fetch_and_repeat() -> None:
     """ Does a preliminary fetch and then repeats the fetch on a
     regularinterval """
     logger.info("Doing initial fetch...")
@@ -193,13 +176,42 @@ async def fetch_and_repeat():
     interval.start()
     logger.info("Startup complete.")
 
+def check_for_missing_and_orphan_sources():
+    """ Verifies that every source is used at least once and that no
+    sources are referenced by a target that aren't declared in sources. """
+    loaded_sources: set = set(config.sources.subreddits.keys()) \
+                        | set(config.sources.multis.keys())
+    unused_sources: set = loaded_sources.copy()
+
+    # Go through all of our sources
+    for target_name, target in config.targets.items():
+        # If a source is used in the target that isn't in the loaded sources.
+        if not loaded_sources.issuperset(target.sources):
+            raise ValueError(f"Source(s) {set(target.sources).difference(loaded_sources)}"\
+                + f" referenced in target '{target_name}' don't exist.")
+        # Remove any sources we used in this target from our unused list.
+        unused_sources.difference_update(target.sources)
+
+    if unused_sources:
+        raise ValueError(f"Source(s) {unused_sources} are never used!")
+
+async def shutdown() -> None:
+    """ Stops the monitoring process """
+    # Do a shutdown
+    logger.warning("Shutting Down...")
+    tornado.ioloop.IOLoop.current().stop()
+
+# We don't use the signals ourselves.
+def handle_sigterm(signum, sighandler) -> None: # pylint: disable=unused-argument
+    """ Handles the SIGTERM signal to stop. """
+    # Register a callback inside the main loop
+    io_loop.add_callback_from_signal(shutdown)
 
 async def main() -> None:
-    """Configures the system and launches the watcher loops"""
+    """ Configures the system and launches the main loop """
     global client
     global config
-    global sub_streams
-    global target_aspect_ratio
+    global sources
     global downloads_sym
 
     try:
@@ -207,6 +219,7 @@ async def main() -> None:
 
         logger.info("Loading Configuration...")
         config = WallpaperConfig.from_file(cmdline_args.config_file)
+        check_for_missing_and_orphan_sources()
         logger.debug("Loaded: %s", config)
 
         logger.info("Loading Auth Tokens...")
@@ -215,8 +228,6 @@ async def main() -> None:
 
         logger.info("Initializing...")
 
-        target_aspect_ratio = float(config.target_size.width)/float(config.target_size.height)
-        logger.debug("Computed aspect ratio of %0.3f", target_aspect_ratio)
         downloads_sym = tornado.locks.Semaphore(config.max_downloads)
 
         client = praw.Reddit(
@@ -225,30 +236,28 @@ async def main() -> None:
             user_agent=USER_AGENT)
 
         logger.info("Starting streams...")
-        sub_streams = {}
-        for subreddit in config.subreddits:
-            sub_streams[subreddit] = client.subreddit(subreddit).stream.submissions(pause_after=-1)
+        sources = {}
+        for subreddit_name in config.sources.subreddits:
+            sources[subreddit_name] = client.subreddit(subreddit_name). \
+                                      stream.submissions(pause_after=-1)
+
+        for source_name, multi in config.sources.multis.items():
+            sources[source_name] = client.multireddit(multi.user, multi.multi). \
+                                   stream.submissions(pause_after=-1)
 
         logger.info("Launching main loop...")
         tornado.ioloop.IOLoop.current().add_callback(fetch_and_repeat)
         polite_print("Wallpaper Downloader Started.")
 
-    except Exception as exc:
-        die("FATAL! Error initializing!", exc_info=exc)
-
-async def shutdown():
-    # Do a shutdown
-    logger.warning("Shutting Down...")
-    tornado.ioloop.IOLoop.current().stop()
-
-def handle_sigterm(signum, sighandler):
-    # Register a callback inside the main loop
-    io_loop.add_callback_from_signal(shutdown)
+    except Exception as exc: # pylint: disable=broad-except
+        # When we error we want to take the whole thing down.
+        logger.critical("FATAL! Error initializing!", exc_info=exc)
+        sys.exit(1)
 
 def parse_cmd_args() -> argparse.Namespace:
     """ Parses out the arguments understood by the program """
     parser = argparse.ArgumentParser(
-        description="Scans a number of subreddits for changes and downloads images"
+        description="Scans a number of subreddits for changes and downloads images" \
                     + " that match the criteria of a wallpaper")
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument(
@@ -284,7 +293,7 @@ if __name__ == "__main__":
 
     # Windows workaround for Python 3.8 and Tornado 6.0.4.
     # See https://www.tornadoweb.org/en/stable/index.html#installation
-    if os.name=="nt":
+    if os.name == "nt":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     # Setup our logging

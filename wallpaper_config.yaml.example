@@ -1,13 +1,43 @@
 ---
-    subreddits:
-        moescape:
-            folder: images/moescape
-        awenime:
-            folder: images/awenime
-
-    target_size:
-        width: 1920
-        height: 1080
     aspect_ratio_tolerance: 0.05
     max_downloads: 5
     update_interval: 60000
+
+    sources:
+        subreddits:
+            WidescreenWallpaper:
+        multis:
+            landscapes:
+                user: Lol33ta
+                multi: imaginarylandscapes
+            characters:
+                user: Lol33ta
+                multi: imaginarycharacters
+
+    targets:
+        desktop:
+            path: "images/desktop"
+            allow_nsfw: false
+            size:
+                width: 3440
+                height: 1440
+            sources:
+                - WidescreenWallpaper
+                - landscapes
+        laptop:
+            path: "images/laptop"
+            allow_nsfw: false
+            size:
+                width: 1920
+                height: 1080
+            sources:
+                - landscapes
+        phone:
+            path: "images/phone"
+            allow_nsfw: false
+            size:
+                width: 1080
+                height: 1920
+            sources:
+                - characters
+                - landscapes
