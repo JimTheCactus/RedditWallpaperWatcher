@@ -25,7 +25,7 @@ class MultiredditConfig():
 @dataclass
 class SourcesConfig():
     """ Holds information about image sources """
-    subreddits: Optional[Dict[str, SubredditConfig]]
+    subreddits: Optional[Dict[str, Optional[SubredditConfig]]]
     multis: Optional[Dict[str, MultiredditConfig]]
 
 @dataclass
@@ -58,7 +58,7 @@ class WallpaperConfig():
     def from_file(filename: str) -> "WallpaperConfig":
         """ Creates a WallpaperConfig from a YAML file """
         with open(filename, "r") as input_file:
-            return jsons.load(yaml.load(input_file, Loader=yaml.BaseLoader), WallpaperConfig)
+            return jsons.load(yaml.load(input_file, Loader=yaml.SafeLoader), WallpaperConfig)
 
 @dataclass
 class RedditAuthInfo():
@@ -70,5 +70,5 @@ class RedditAuthInfo():
     def from_file(filename: str) -> "RedditAuthInfo":
         """ Creates a RedditAuthInfo from a YAML file """
         with open(filename, "r") as input_file:
-            auth = jsons.load(yaml.load(input_file, Loader=yaml.BaseLoader), RedditAuthInfo)
+            auth = jsons.load(yaml.load(input_file, Loader=yaml.SafeLoader), RedditAuthInfo)
         return auth
