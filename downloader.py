@@ -80,10 +80,14 @@ async def download_image(url: str, dest_directories: List[str], skip_existing: b
     """ Downloads an image and saves it to one or more folders. """
     client: tornado.httpclient.AsyncHTTPClient
 
-    with NamedTemporaryFile("wb") as target_file:
+    with NamedTemporaryFile("wb", delete=False) as target_file:
         logger.info("Starting download of '%s' to '%s'.", url, target_file.name)
         with _get_async_client() as client:
             result = await client.fetch(url, streaming_callback=target_file.write)
+            # Make sure we flush our data to disk.
+            target_file.close()
+
+            # Parse out the content type so we can infer suffixes as necessary.
             if 'Content-Type' in result.headers:
                 content_type = result.headers['Content-Type']
             else:
