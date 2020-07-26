@@ -42,7 +42,7 @@ def _get_async_client(*args, **kwargs) -> tornado.httpclient.AsyncHTTPClient:
         http_client.close()
 
 async def copy_to_destinations(source_file: str, dest_directories: List[str],
-                               prefix: str, suffix: str) -> List[str]:
+                               prefix: str, suffix: str, skip_existing: bool=False) -> List[str]:
     """ Copies a file to a number of destination folders """
     locations = []
     for directory in dest_directories:
@@ -53,16 +53,22 @@ async def copy_to_destinations(source_file: str, dest_directories: List[str],
 
         # Build up the final image name
         location = dirpath / f"{prefix}{suffix}"
-        # Add infixes until we find a good filename.
-        # This is non-atomic and unsafe. Don't go playing in the folder while we do this.
-        count = 1
-        warned = False
+
+        # Check if that file already exists.
         if location.exists():
-            if not warned:
-                logger.warning("File '%s' already exists. File will be renamed.", str(location))
-                warned = True
-            location = dirpath / f"{prefix} ({count}){suffix}"
-            count += 1
+            # If we've been told to just skip on duplicates, we can stop now.
+            if skip_existing:
+                continue
+
+            logger.warning("File '%s' already exists. File will be renamed.", str(location))
+            # try infixes until we find a good filename.
+            # This is non-atomic and unsafe. Don't go playing in the folder while we do this.
+            count = 1
+            while True:
+                location = dirpath / f"{prefix} ({count}){suffix}"
+                if not location.exists():
+                    break
+                count += 1
         # And copy our temporary file into it's final resting place.
         logger.debug("Copying from '%s' to '%s'", source_file, str(location))
         shutil.copyfile(source_file, str(location))
@@ -70,7 +76,7 @@ async def copy_to_destinations(source_file: str, dest_directories: List[str],
     return locations
 
 
-async def download_image(url: str, dest_directories: List[str]) -> List[str]:
+async def download_image(url: str, dest_directories: List[str], skip_existing: bool) -> List[str]:
     """ Downloads an image and saves it to one or more folders. """
     client: tornado.httpclient.AsyncHTTPClient
 
@@ -102,7 +108,7 @@ async def download_image(url: str, dest_directories: List[str]) -> List[str]:
             else:
                 logger.warning("No extension found and could not infer one for '%s'!", url)
 
-        locations = await copy_to_destinations(target_file.name, dest_directories, prefix, suffix)
+        locations = await copy_to_destinations(target_file.name, dest_directories, prefix, suffix, skip_existing)
 
     logger.info("Download complete.")
 

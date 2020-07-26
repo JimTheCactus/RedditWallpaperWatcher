@@ -56,13 +56,13 @@ def polite_print(*args, **kwargs) -> None:
     if not cmdline_args.quiet:
         print(*args, **kwargs)
 
-async def do_download(url: str, dest_directories: List[str]) -> None:
+async def do_download(url: str, dest_directories: List[str], skip_existing: bool) -> None:
     """ Waits for a free download slot to open up and downloads an image """
     try:
         # Grab a handle on our download throttle
         async with downloads_sym:
             # Since it's our turn, download the image
-            filenames = await download_image(url, dest_directories)
+            filenames = await download_image(url, dest_directories, skip_existing=skip_existing)
 
         polite_print(f"Downloaded {filenames}'.")
         logger.info("Downloaded %s", filenames)
@@ -70,7 +70,8 @@ async def do_download(url: str, dest_directories: List[str]) -> None:
         # We want exceptions here to be non-fatal
         logger.error("Unable to download 'url'.", exc_info=exc)
 
-async def process_post(post: Submission, source_name: str) -> List[asyncio.Task]:
+async def process_post(post: Submission, source_name: str,
+                      skip_existing: bool) -> List[asyncio.Task]:
     """ Processes submissions retrieved from reddit, identifies any
     appropriate images, and downloads them. Returns a list of download
     tasks to be awaited. """
@@ -110,6 +111,7 @@ async def process_post(post: Submission, source_name: str) -> List[asyncio.Task]
                     > config.aspect_ratio_tolerance:
                 continue
             if post.over_18 and not target.allow_nsfw:
+                logger.debug("Image is NSFW. %s doesn't allow NSFW images. Skipping.", target_name)
                 continue
             destinations[target_name] = target.path
 
@@ -119,13 +121,13 @@ async def process_post(post: Submission, source_name: str) -> List[asyncio.Task]
             # Start a download but don't await it. Just catch the future for later.
             downloads.append(
                 asyncio.create_task(
-                    do_download(source_image.url, destinations.values())
+                    do_download(source_image.url, destinations.values(), skip_existing)
                 )
             )
 
     return downloads
 
-async def fetch_latest() -> None:
+async def fetch_latest(skip_existing: bool = False) -> None:
     """ Fetches any pending posts and downloads any appropriate images """
 
     try:
@@ -141,7 +143,7 @@ async def fetch_latest() -> None:
                 while post is not None:
                     # We want to fail nicely per post.
                     try:
-                        downloads += await process_post(post, source_name)
+                        downloads += await process_post(post, source_name, skip_existing)
                     except Exception as exc:  # pylint: disable=broad-except
                         # We want exceptions here to be non-fatal
                         logger.error("Failed to process post '%s'.", post.title, exc_info=exc)
@@ -166,7 +168,7 @@ async def fetch_and_repeat() -> None:
     regularinterval """
     logger.info("Doing initial fetch...")
     # Do an initial fetch
-    await fetch_latest()
+    await fetch_latest(skip_existing=True)
 
     logger.info("Registering timed fetch...")
     interval = tornado.ioloop.PeriodicCallback(
