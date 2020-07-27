@@ -35,7 +35,7 @@ class Size():
     height: int
     aspect_ratio: float = field(init=False, repr=False)
     def __post_init__(self):
-        self.aspect_ratio = self.width / self.height
+        self.aspect_ratio = float(self.width) / float(self.height)
 
 @dataclass
 class TargetConfig():
