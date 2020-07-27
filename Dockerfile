@@ -16,5 +16,6 @@ COPY . .
 # enough to get the config files.
 RUN cp wallpaper_config.yaml.example wallpaper_config.yaml \
     && cp auth_info.yaml.example auth_info.yaml
+
 # Configure docker to launch our program
 CMD ["/app/wallpaperwatcher.py", "-v"]
