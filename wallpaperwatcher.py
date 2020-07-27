@@ -181,8 +181,14 @@ async def fetch_and_repeat() -> None:
 def check_for_missing_and_orphan_sources():
     """ Verifies that every source is used at least once and that no
     sources are referenced by a target that aren't declared in sources. """
-    loaded_sources: set = set(config.sources.subreddits.keys()) \
-                        | set(config.sources.multis.keys())
+    loaded_sources = set()
+    if config.sources.subreddits:
+        loaded_sources |= set(config.sources.subreddits.keys())
+    if config.sources.multis:
+        loaded_sources |= set(config.sources.multis.keys())
+    if len(loaded_sources) < 1:
+        raise ValueError(f"No sources found in the configuration.")
+
     unused_sources: set = loaded_sources.copy()
 
     # Go through all of our sources
@@ -239,13 +245,15 @@ async def main() -> None:
 
         logger.info("Starting streams...")
         sources = {}
-        for subreddit_name in config.sources.subreddits:
-            sources[subreddit_name] = client.subreddit(subreddit_name). \
-                                      stream.submissions(pause_after=-1)
+        if config.sources.subreddits:
+            for subreddit_name in config.sources.subreddits:
+                sources[subreddit_name] = client.subreddit(subreddit_name). \
+                                        stream.submissions(pause_after=-1)
 
-        for source_name, multi in config.sources.multis.items():
-            sources[source_name] = client.multireddit(multi.user, multi.multi). \
-                                   stream.submissions(pause_after=-1)
+        if config.sources.multis:
+            for source_name, multi in config.sources.multis.items():
+                sources[source_name] = client.multireddit(multi.user, multi.multi). \
+                                    stream.submissions(pause_after=-1)
 
         logger.info("Launching main loop...")
         tornado.ioloop.IOLoop.current().add_callback(fetch_and_repeat)
