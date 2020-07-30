@@ -23,6 +23,7 @@ import asyncio
 import argparse
 import signal
 import shutil
+import hashlib
 from pathlib import PurePath, Path
 from tempfile import NamedTemporaryFile
 
@@ -153,7 +154,8 @@ class WallpaperWatcher():
 
 
         logging.info("Starting initial update...")
-        await self._update(skip_existing=True)
+        #await self._update(skip_existing=True)
+        await self._update()
 
         self.interval.start()
 
@@ -227,8 +229,24 @@ class WallpaperWatcher():
         return True
 
     @staticmethod
-    def _copy_to_destination(source_file: str, directory: str,
-                                prefix: str, suffix: str, skip_existing: bool=False) -> Optional[str]:
+    async def _compute_file_hash(source_file: Path):
+        """ Computes the SHA256 hash of a file and returns it's hex string """
+        CHUNK_SIZE = 65536
+        hasher = hashlib.sha256()
+        with source_file.open("rb") as fd:
+            chunk = fd.read(CHUNK_SIZE)
+            while chunk:
+                hasher.update(chunk)
+                # Yield to allow other things to work and not hog the CPU.
+                await asyncio.sleep(0)
+                chunk = fd.read(CHUNK_SIZE)
+        return hasher.hexdigest()
+
+
+    @staticmethod
+    async def _copy_to_destination(source_file: str, directory: str,
+                                prefix: str, suffix: str, skip_existing: bool = False,
+                                source_hash: Optional[str] = None) -> Optional[str]:
         """ Copies a file to a number of destination folders """
         # start with the directory we were given
         dirpath = Path(directory)
@@ -242,6 +260,11 @@ class WallpaperWatcher():
         if location.exists():
             # If we've been told to just skip on duplicates, we can stop now.
             if skip_existing:
+                logger.info("Some file already exists and we were told to skip existing filenames.")
+                return None
+
+            if source_hash and source_hash == await WallpaperWatcher._compute_file_hash(location):
+                logger.info("Exact same file already exists. Skipping.")
                 return None
 
             logger.warning("File '%s' already exists. File will be renamed.", str(location))
@@ -265,22 +288,35 @@ class WallpaperWatcher():
         try:
             # Grab a handle on our download throttle
             async with self._downloads_sym:
-                with NamedTemporaryFile("wb") as spool_file:
-                    result = await FileDownload(url, spool_file).start()
-                    polite_print(f"Downloaded {url}'.")
-                    logger.info("Downloaded %s", url)
+                with NamedTemporaryFile("wb", delete=False) as spool_file:
+                    try:
+                        # Prep a download
+                        pending_download = FileDownload(url, spool_file)
+                        # and wait for it to finish
+                        result = await pending_download.start()
 
-                    filename = SafeFilename(url, result.headers['Content-type'])
+                        # Close up the file so we can copy it.
+                        spool_file.close()
 
-                    for target in targets:
-                        filename = WallpaperWatcher._copy_to_destination(
-                            spool_file.name,
-                            target.path,
-                            filename.prefix,
-                            filename.suffix,
-                            skip_existing=skip_existing)
+                        polite_print(f"Downloaded {url}'.")
+                        logger.info("Downloaded %s", url)
 
-                        logger.info("Saved file as %s", filename)
+                        filename = SafeFilename(url, result.headers['Content-type'])
+
+                        for target in targets:
+                            filename = await WallpaperWatcher._copy_to_destination(
+                                spool_file.name,
+                                target.path,
+                                filename.prefix,
+                                filename.suffix,
+                                source_hash=pending_download.get_hash(),
+                                skip_existing=skip_existing)
+
+                            logger.info("Saved file as %s", filename)
+                    finally:
+                        if not spool_file.closed:
+                            spool_file.close()
+                        os.unlink(spool_file.name)
         except Exception as exc: # pylint: disable=broad-except
             # We want exceptions here to be non-fatal
             logger.error("Unable to download 'url'.", exc_info=exc)
