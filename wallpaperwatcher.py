@@ -24,6 +24,7 @@ import argparse
 import signal
 import shutil
 import hashlib
+import sqlite3
 from pathlib import PurePath, Path
 from tempfile import NamedTemporaryFile
 
@@ -53,7 +54,6 @@ class RedditImage():
     def __post_init__(self):
         self.aspect_ratio = float(self.width) / float(self.height)
 
-
 class WallpaperWatcher():
     _client: praw.Reddit
     _config: WallpaperConfig
@@ -64,8 +64,9 @@ class WallpaperWatcher():
     _sources: Dict[str, stream_generator]
     _targets_by_source: Dict[str, List[TargetConfig]]
     _interval: tornado.ioloop.PeriodicCallback
+    _conn: sqlite3.Connection
 
-    def __init__(self, credentials: RedditAuthInfo, config: WallpaperConfig):
+    def __init__(self, credentials: RedditAuthInfo, config: WallpaperConfig, db_location: str):
         # Create an IO Loop
         self._running = False
         self._started = False
@@ -82,7 +83,18 @@ class WallpaperWatcher():
             callback=self._update,
             callback_time=self._config.update_interval,
             jitter=0.1)
-
+        Path("data").mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(db_location)
+        cur = self._conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS filehashes (
+                hash text NOT NULL,
+                target text NOT NULL,
+                filename text NOT NULL,
+                PRIMARY KEY (hash, target)
+            )
+        """)
+        self._conn.commit()
 
     def start(self):
         if self._started:
@@ -282,7 +294,7 @@ class WallpaperWatcher():
 
         return location
 
-    async def _download_file_to_targets(self, url: str, targets: List[TargetConfig],
+    async def _download_file_to_targets(self, url: str, targets: Dict[str, TargetConfig],
                                         skip_existing: bool):
         """ Waits for a free download slot to open up and downloads an image """
         try:
@@ -303,8 +315,18 @@ class WallpaperWatcher():
 
                         filename = SafeFilename(url, result.headers['Content-type'])
 
-                        for target in targets:
-                            filename = await WallpaperWatcher._copy_to_destination(
+                        for target_name, target in targets.items():
+                            cur = self._conn.cursor()
+                            cur.execute("SELECT filename FROM filehashes WHERE hash=? AND target=?;",
+                                        (pending_download.get_hash(), target_name))
+                            result = cur.fetchone()
+                            if result is not None:
+                                logger.info("File has been downloaded before as '%s'", str(result[0]))
+                                if Path(result[0]).exists():
+                                    logger.info("Skiping since it already exists.")
+                                    continue
+
+                            filename = await self._copy_to_destination(
                                 spool_file.name,
                                 target.path,
                                 filename.prefix,
@@ -312,11 +334,16 @@ class WallpaperWatcher():
                                 source_hash=pending_download.get_hash(),
                                 skip_existing=skip_existing)
 
+                            if filename is not None:
+                                cur.execute("INSERT INTO filehashes(hash, target, filename) values (?,?,?);",
+                                            (pending_download.get_hash(), target_name, str(filename)))
+
                             logger.info("Saved file as %s", filename)
                     finally:
                         if not spool_file.closed:
                             spool_file.close()
                         os.unlink(spool_file.name)
+                        self._conn.commit()
         except Exception as exc: # pylint: disable=broad-except
             # We want exceptions here to be non-fatal
             logger.error("Unable to download 'url'.", exc_info=exc)
@@ -341,7 +368,7 @@ class WallpaperWatcher():
                 if len(targets) == 0:
                     continue
                 logger.info(f"Image is appropriate for {targets.keys()}")
-                downloads.append(self._download_file_to_targets(url, targets.values(), skip_existing))
+                downloads.append(self._download_file_to_targets(url, targets, skip_existing))
 
         if downloads:
             await asyncio.wait(downloads)
@@ -432,7 +459,7 @@ if __name__ == "__main__":
     auth_info = RedditAuthInfo.from_file(cmdline_args.auth_file)
     global_logger.debug("Loaded: %s", auth_info)
 
-    my_watcher = WallpaperWatcher(auth_info, loaded_config)
+    my_watcher = WallpaperWatcher(auth_info, loaded_config, "data/filelist.db")
     my_watcher.start()
 
     polite_print("Wallpaper Downloader Stopped.")
