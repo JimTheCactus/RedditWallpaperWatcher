@@ -9,3 +9,6 @@
           - ./wallpaper_config.yaml:/app/wallpaper_config.yaml
           - ./auth_info.yaml:/app/auth_info.yaml
           - ./images/:/app/images/
+          - hashdb:/app/data/
+    volumes:
+      hashdb:
