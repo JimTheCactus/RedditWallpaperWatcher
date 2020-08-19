@@ -322,9 +322,10 @@ class WallpaperWatcher():
                             result = cur.fetchone()
                             if result is not None:
                                 logger.info("File has been downloaded before as '%s'", str(result[0]))
-                                if Path(result[0]).exists():
-                                    logger.info("Skiping since it already exists.")
-                                    continue
+#                                if Path(result[0]).exists():
+#                                    logger.info("Skiping since it already exists.")
+#                                    continue
+                                continue
 
                             filename = await self._copy_to_destination(
                                 spool_file.name,
