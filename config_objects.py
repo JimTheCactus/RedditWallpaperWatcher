@@ -8,6 +8,7 @@ wallpaper watcher.
 """
 from typing import List, Dict, Optional
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import jsons
 import yaml
@@ -48,6 +49,7 @@ class TargetConfig():
 @dataclass
 class WallpaperConfig():
     """ Loads and holds the configuration for wallpaperwatcher. """
+    database_file: Path
     aspect_ratio_tolerance: float
     max_downloads: int
     update_interval: int

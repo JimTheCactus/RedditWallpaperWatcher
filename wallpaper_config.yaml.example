@@ -1,4 +1,5 @@
 ---
+    database_file: data/fileinfo.db
     aspect_ratio_tolerance: 0.05
     max_downloads: 5
     update_interval: 60000

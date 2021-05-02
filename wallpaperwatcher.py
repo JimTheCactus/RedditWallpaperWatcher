@@ -66,7 +66,7 @@ class WallpaperWatcher():
     _interval: tornado.ioloop.PeriodicCallback
     _conn: sqlite3.Connection
 
-    def __init__(self, credentials: RedditAuthInfo, config: WallpaperConfig, db_location: str):
+    def __init__(self, credentials: RedditAuthInfo, config: WallpaperConfig):
         # Create an IO Loop
         self._running = False
         self._started = False
@@ -84,6 +84,7 @@ class WallpaperWatcher():
             callback_time=self._config.update_interval,
             jitter=0.1)
         Path("data").mkdir(parents=True, exist_ok=True)
+        db_location = config.database_file
         self._conn = sqlite3.connect(db_location)
         cur = self._conn.cursor()
         cur.execute("""
@@ -460,7 +461,7 @@ if __name__ == "__main__":
     auth_info = RedditAuthInfo.from_file(cmdline_args.auth_file)
     global_logger.debug("Loaded: %s", auth_info)
 
-    my_watcher = WallpaperWatcher(auth_info, loaded_config, "data/filelist.db")
+    my_watcher = WallpaperWatcher(auth_info, loaded_config)
     my_watcher.start()
 
     polite_print("Wallpaper Downloader Stopped.")
