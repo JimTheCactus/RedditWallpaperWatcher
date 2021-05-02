@@ -1,4 +1,4 @@
-FROM python:3.8
+FROM python:3.9
 
 # Mark that the app should work in the context of the app
 WORKDIR /app

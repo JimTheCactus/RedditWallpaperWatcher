@@ -2,13 +2,19 @@
     version: "2.4"
     services:
       wallpaperwatcher:
-        image: wallpaperwatcher:0.0.2
+        image: wallpaperwatcher:0.0.3
         build:
           context: .
+        restart: unless-stopped
         volumes:
           - ./wallpaper_config.yaml:/app/wallpaper_config.yaml
           - ./auth_info.yaml:/app/auth_info.yaml
           - ./images/:/app/images/
           - hashdb:/app/data/
+        logging:
+          driver: "json-file"
+          options:
+            max-size: "1m"
+            max-file: "3"
     volumes:
       hashdb:
